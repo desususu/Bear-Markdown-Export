@@ -5,6 +5,8 @@
 
 import shlex
 import objc
+import os
+import base64  # 【新增】用于将图片转换为 base64 增量同步
 from AppKit import NSWorkspace, NSWorkspaceOpenConfiguration, NSURL
 
 '''
@@ -610,8 +612,9 @@ def textbundle_to_bear(md_text, md_file, mod_dt):
     bundle = os.path.split(md_file)[0]
     match = re.search(r'\{BearID:(.+?)\}', md_text)
     
-    import shutil # 确保导入了文件操作库
-    import urllib.parse # 确保拥有 URL 处理能力
+    import shutil
+    import urllib.parse
+    import base64  # 确保拥有 base64 处理能力
     
     if match:
         uuid = match.group(1)
@@ -625,39 +628,29 @@ def textbundle_to_bear(md_text, md_file, mod_dt):
             clean_md_text = re.sub(r'!\[([^\]]+)\](?!\()', lambda m: f"![{m.group(1)}]({refs.get(m.group(1), m.group(1))})", clean_md_text)
             clean_md_text = re.sub(r'^\[[^\]]+\]:[ \t]*\S+.*$\n?', '', clean_md_text, flags=re.MULTILINE)
         
-        # 2. 检查是否有新图片，并强制统一图片路径为 assets/xxx
-        has_new_images = False
+        # 2. 检查并整理图片，准备增量上传列表
+        new_images_to_upload = []
+        
         def fix_and_check_images(m):
-            nonlocal has_new_images
             alt = m.group(1)
             raw_path = urllib.parse.unquote(m.group(2))
             img_filename = raw_path.split('/')[-1]
             
-            # 判断是否为新图片 (没有熊掌记的 UUID 前缀)
-            if not re.match(r'(?i)[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}_', img_filename):
-                has_new_images = True
-                
-            # 【修复 1】：必须剥离原有的 UUID 前缀，防止多次同步导致前缀无限嵌套叠加
             clean_filename = re.sub(r'(?i)^[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}_', '', img_filename)
-            
-            # 【修复 2】：强制重写为标准 assets 路径，并加上 URL 编码保障空格兼容性
             safe_filename = urllib.parse.quote(clean_filename)
             return f"![{alt}](assets/{safe_filename})"
             
         fixed_md_text = re.sub(r'!\[(.*?)\]\(([^)]+)\)', fix_and_check_images, clean_md_text)
-        
-        # 将整理好的干净文本写回本地文件
         write_file(md_file, fixed_md_text, mod_dt, 0)
         
-        # 移动散落在外面的图片到 assets 文件夹中，确保 textbundle 结构完美
+        # 移动并整理 assets 文件夹
         assets_dir = os.path.join(bundle, 'assets')
         if not os.path.exists(assets_dir):
             os.makedirs(assets_dir)
             
-        matches = re.findall(r'!\[(.*?)\]\(([^)]+)\)', clean_md_text) # 使用旧文本找源文件
+        matches = re.findall(r'!\[(.*?)\]\(([^)]+)\)', clean_md_text)
         for alt_text, img_path in matches:
             img_filename = urllib.parse.unquote(img_path).split('/')[-1]
-            # 【修复 3】：同样要计算剥离后的纯净文件名，并准备重命名物理文件
             clean_filename = re.sub(r'(?i)^[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}_', '', img_filename)
             
             loose_path = os.path.join(bundle, img_filename)
@@ -667,44 +660,51 @@ def textbundle_to_bear(md_text, md_file, mod_dt):
             if os.path.exists(loose_path) and not os.path.exists(new_asset_path):
                 shutil.copy2(loose_path, new_asset_path)
             elif os.path.exists(old_asset_path) and old_asset_path != new_asset_path:
-                # 【修复 4】：剔除原有 assets 目录中旧文件的 UUID 前缀，重置为纯净名
                 shutil.move(old_asset_path, new_asset_path)
-                
-        # 3. 核心分流处理
-        if has_new_images:
-            # 【策略 A】：发现新图片，启用“浴火重生”战术
             
-            # (1) 将旧的没有图片的残缺笔记扔进熊掌记废纸篓
-            x_trash = f"bear://x-callback-url/trash?id={uuid}"
-            url_trash = NSURL.URLWithString_(x_trash)
-            if url_trash is not None:
-                NSWorkspace.sharedWorkspace().openURL_configuration_completionHandler_(url_trash, open_config, None)
-                time.sleep(0.5)
+            # 【优雅的增量核心】：判断是否为新图片 (没有熊掌记的 UUID 前缀)
+            if not re.match(r'(?i)[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}_', img_filename):
+                if os.path.exists(new_asset_path):
+                    new_images_to_upload.append((clean_filename, new_asset_path))
                 
-            # (2) 召唤系统原生能力，直接将标准化的 .textbundle 作为全新笔记完美导入
-            os.utime(bundle, (-1, mod_dt))
-            subprocess.call(['open', '-a', 'Bear', bundle])
-            time.sleep(1.0) # 等待熊掌记处理完毕
+        # 3. 增量上传新图片到熊掌记
+        if new_images_to_upload:
+            for filename, filepath in new_images_to_upload:
+                try:
+                    with open(filepath, "rb") as image_file:
+                        encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
+                    
+                    safe_filename = urllib.parse.quote(filename)
+                    safe_file = urllib.parse.quote(encoded_string, safe='')
+                    
+                    # 使用 add-file API 增量追加图片，不改变笔记 UUID
+                    x_add_file = f"bear://x-callback-url/add-file?show_window=no&open_note=no&id={uuid}&filename={safe_filename}&mode=append&file={safe_file}"
+                    url = NSURL.URLWithString_(x_add_file)
+                    
+                    if url is not None:
+                        NSWorkspace.sharedWorkspace().openURL_configuration_completionHandler_(url, open_config, None)
+                        time.sleep(1.0) # 稍微等待 Bear 将图片存入 SQLite 数据库
+                except Exception as e:
+                    print(f"增量上传图片 {filename} 失败: {str(e)}")
+        
+        # 4. 无论是否增加了图片，统一执行文本静默替换，刷新排版
+        def restore_img_format(m):
+            alt = m.group(1)
+            filename = urllib.parse.unquote(m.group(2)).split('/')[-1]
+            clean_name = re.sub(r'(?i)^[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}_', '', filename)
+            return f"![{alt}]({clean_name})"
             
-        else:
-            # 【策略 B】：只是修改了文字或删除了图片，静默更新即可
-            def restore_img_format(m):
-                alt = m.group(1)
-                filename = urllib.parse.unquote(m.group(2)).split('/')[-1]
-                # 兼容旧版本和忽略大小写的正则表达式
-                clean_name = re.sub(r'(?i)^[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}_', '', filename)
-                return f"![{alt}]({clean_name})"
-                
-            bear_md_text = re.sub(r'!\[(.*?)\]\(([^)]+)\)', restore_img_format, clean_md_text)
-            safe_text = urllib.parse.quote(bear_md_text, safe='')
-            x_replace = f"bear://x-callback-url/add-text?show_window=no&open_note=no&mode=replace_all&id={uuid}&text={safe_text}"
-            url = NSURL.URLWithString_(x_replace)
-            if url is not None:
-                NSWorkspace.sharedWorkspace().openURL_configuration_completionHandler_(url, open_config, None)
-                time.sleep(0.5)
+        bear_md_text = re.sub(r'!\[(.*?)\]\(([^)]+)\)', restore_img_format, clean_md_text)
+        safe_text = urllib.parse.quote(bear_md_text, safe='')
+        x_replace = f"bear://x-callback-url/add-text?show_window=no&open_note=no&mode=replace_all&id={uuid}&text={safe_text}"
+        
+        url = NSURL.URLWithString_(x_replace)
+        if url is not None:
+            NSWorkspace.sharedWorkspace().openURL_configuration_completionHandler_(url, open_config, None)
+            time.sleep(0.5)
                 
     else:
-        # 如果是压根没有 BearID 的完全新建文档
+        # 如果是压根没有 BearID 的完全新建文档，依然保持原生系统导入
         md_text = get_tag_from_path(md_text, bundle, export_path)
         write_file(md_file, md_text, mod_dt, 0)
         os.utime(bundle, (-1, mod_dt))
