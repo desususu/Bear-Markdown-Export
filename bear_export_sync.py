@@ -647,7 +647,7 @@ def update_bear_note(md_text, md_file, ts, ts_last_export):
             # Regular external update
             orig_title = backup_bear_note(uuid)
             # message = '::External update: ' + time_stamp_ts(ts) + '::'   
-            x_replace = 'bear://x-callback-url/add-text?show_window=no&open_note=no&mode=replace&id=' + uuid
+            x_replace = 'bear://x-callback-url/add-text?show_window=no&open_note=no&mode=replace_all&id=' + uuid
             bear_x_callback(x_replace, md_text, '', orig_title)
             # # Trash old original note:
             # x_trash = 'bear://x-callback-url/trash?show_window=no&id=' + uuid
