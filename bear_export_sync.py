@@ -52,10 +52,10 @@ hide_tags_in_comment_block = False  # Hide tags in HTML comments: `<!-- #mytag -
 only_export_these_tags = []  # Leave this list empty for all notes! See below for sample
 # only_export_these_tags = ['bear/github', 'writings'] 
 
-export_as_textbundles = False  # Exports as Textbundles with images included
+export_as_textbundles = True  # Exports as Textbundles with images included
 export_as_hybrids = True  # Exports as .textbundle only if images included, otherwise as .md
                           # Only used if `export_as_textbundles = True`
-export_image_repository = True  # Export all notes as md but link images to 
+export_image_repository = Flase  # Export all notes as md but link images to 
                                  # a common repository exported to: `assets_path` 
                                  # Only used if `export_as_textbundles = False`
 
@@ -656,22 +656,28 @@ open_config = NSWorkspaceOpenConfiguration.alloc().init()
 open_config.setActivates_(False)
 
 def bear_x_callback(x_command, md_text, message, orig_title):
+    # 1. 如果有提示信息，将其插入到第二行
     if message != '':
         lines = md_text.splitlines()
         lines.insert(1, message)
         md_text = '\n'.join(lines)
-    if orig_title != '':
-        lines = md_text.splitlines()
-        title = re.sub(r'^#+ ', r'', lines[0])
-        if title != orig_title:
-            md_text = '\n'.join(lines)
-        else:
-            md_text = '\n'.join(lines[1:])        
-    x_command_text = x_command + '&text=' + urllib.parse.quote(md_text)
+        
+    # 【已删除】旧代码中 "if orig_title != '':" 的逻辑被整体移除。
+    # 这样可以确保文本的第一行（标题）永远不会再被错误地吞掉！
+    
+    # 2. 对整个 Markdown 文本进行严格的 URL 编码
+    # 增加 safe='' 强制转义所有特殊字符，防止 NSURL 解析失败导致新建 md 无法同步
+    x_command_text = x_command + '&text=' + urllib.parse.quote(md_text, safe='')
     url = NSURL.URLWithString_(x_command_text)
-    NSWorkspace.sharedWorkspace().openURL_configuration_completionHandler_(url, open_config, None)
+    
+    # 3. 触发系统 URL 方案，并增加安全检查
+    if url is not None:
+        NSWorkspace.sharedWorkspace().openURL_configuration_completionHandler_(url, open_config, None)
+    else:
+        # 当文本包含极其特殊的异常字符导致 URL 生成失败时，能在终端给出提示，避免静默失败
+        print("警告: 无法构建 NSURL 进行同步。这通常是因为文本中包含异常字符。")
+        
     time.sleep(.2)
-
 
 def check_sync_conflict(uuid, ts_last_export):
     conflict = False
