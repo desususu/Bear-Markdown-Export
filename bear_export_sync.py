@@ -608,18 +608,40 @@ def textbundle_to_bear(md_text, md_file, mod_dt):
     md_text = restore_tags(md_text)
     bundle = os.path.split(md_file)[0]
     match = re.search(r'\{BearID:(.+?)\}', md_text)
+    
     if match:
         uuid = match.group(1)
-        # Remove old BearID: from new note
+        # 移除旧的 BearID 标记
         md_text = re.sub(r'\<\!-- ?\{BearID\:' + uuid + r'\} ?--\>', '', md_text).rstrip() + '\n'
-        md_text = insert_link_top_note(md_text, 'Images added! Link to original note: ', uuid)
+        
+        # 【核心修复 1】：直接把干净的文本保存到外部文件，不加任何乱码！
+        write_file(md_file, md_text, mod_dt, 0)
+        
+        # 【核心修复 2】：静默更新熊掌记中已有文档的文本 (不再使用 open 导入导致重复)
+        x_replace = 'bear://x-callback-url/add-text?show_window=no&open_note=no&mode=replace_all&id=' + uuid
+        bear_x_callback(x_replace, md_text, '', '')
+        
+        # 【核心修复 3】：找出新添加的图片，使用附件形式静默追加到熊掌记文档末尾
+        matches = re.findall(r'!\[.*?\]\((assets/.+?)\)', md_text)
+        for img_rel_path in matches:
+            img_filename = img_rel_path.split('/')[-1]
+            # 排除掉熊掌记原本自带的旧图片，只上传你在外部新加的图片
+            if not re.match(r'[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}', img_filename):
+                img_full_path = os.path.join(bundle, img_rel_path)
+                if os.path.exists(img_full_path):
+                    # 调用 Bear 的 add-file 接口上传图片
+                    x_file = f"bear://x-callback-url/add-file?id={uuid}&mode=append&filepath={urllib.parse.quote(img_full_path, safe='')}"
+                    url = NSURL.URLWithString_(x_file)
+                    if url is not None:
+                        NSWorkspace.sharedWorkspace().openURL_configuration_completionHandler_(url, open_config, None)
+                        time.sleep(0.5)
     else:
-        # New textbundle (with images), add path as tag: 
+        # 如果是完全【新建】的 textbundle (没有 BearID)，直接使用熊掌记原生导入，完美保留排版
         md_text = get_tag_from_path(md_text, bundle, export_path)
-    write_file(md_file, md_text, mod_dt, 0)
-    os.utime(bundle, (-1, mod_dt))
-    subprocess.call(['open', '-a', '/applications/bear.app', bundle])
-    time.sleep(0.5)
+        write_file(md_file, md_text, mod_dt, 0)
+        os.utime(bundle, (-1, mod_dt))
+        subprocess.call(['open', '-a', 'Bear', bundle])
+        time.sleep(0.5)
 
 
 def backup_ext_note(md_file):
