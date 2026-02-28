@@ -577,7 +577,8 @@ def sync_md_updates():
                     # 【新增下面这一行】：在读取文件后立即修复图片格式
                     md_text = convert_ref_links_to_inline(md_text) 
                     backup_ext_note(md_file)
-                    if check_if_image_added(md_text, md_file):
+                    # 【修改为下面这行】：只要是 textbundle，就必须走专门的安全通道
+                    if '.textbundle' in md_file:
                         textbundle_to_bear(md_text, md_file, ts)
                         write_log('Imported to Bear: ' + md_file)
                     else:
@@ -611,32 +612,43 @@ def textbundle_to_bear(md_text, md_file, mod_dt):
     
     if match:
         uuid = match.group(1)
-        # 移除旧的 BearID 标记
-        md_text = re.sub(r'\<\!-- ?\{BearID\:' + uuid + r'\} ?--\>', '', md_text).rstrip() + '\n'
+        # 1. 移除外部专用的 BearID 标记
+        clean_md_text = re.sub(r'\<\!-- ?\{BearID\:' + uuid + r'\} ?--\>', '', md_text).rstrip() + '\n'
+        write_file(md_file, clean_md_text, mod_dt, 0)
         
-        # 【核心修复 1】：直接把干净的文本保存到外部文件，不加任何乱码！
-        write_file(md_file, md_text, mod_dt, 0)
-        
-        # 【核心修复 2】：静默更新熊掌记中已有文档的文本 (不再使用 open 导入导致重复)
-        x_replace = 'bear://x-callback-url/add-text?show_window=no&open_note=no&mode=replace_all&id=' + uuid
-        bear_x_callback(x_replace, md_text, '', '')
-        
-        # 【核心修复 3】：找出新添加的图片，使用附件形式静默追加到熊掌记文档末尾
-        matches = re.findall(r'!\[.*?\]\((assets/.+?)\)', md_text)
+        # 2. 扫描并上传外部刚加进来的新图片 (通过 add-file 接口)
+        matches = re.findall(r'!\[.*?\]\((assets/[^)]+)\)', clean_md_text)
         for img_rel_path in matches:
-            img_filename = img_rel_path.split('/')[-1]
-            # 排除掉熊掌记原本自带的旧图片，只上传你在外部新加的图片
-            if not re.match(r'[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}', img_filename):
-                img_full_path = os.path.join(bundle, img_rel_path)
+            img_rel_path_unq = urllib.parse.unquote(img_rel_path)
+            img_filename = img_rel_path_unq.split('/')[-1]
+            # 如果文件名不带有 Bear 的长串 UUID，说明是你自己刚刚拖进去的新图片
+            if not re.match(r'[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}_', img_filename):
+                img_full_path = os.path.join(bundle, img_rel_path_unq)
                 if os.path.exists(img_full_path):
-                    # 调用 Bear 的 add-file 接口上传图片
-                    x_file = f"bear://x-callback-url/add-file?id={uuid}&mode=append&filepath={urllib.parse.quote(img_full_path, safe='')}"
+                    safe_path = urllib.parse.quote(img_full_path, safe='')
+                    x_file = f"bear://x-callback-url/add-file?id={uuid}&mode=append&filepath={safe_path}"
                     url = NSURL.URLWithString_(x_file)
                     if url is not None:
                         NSWorkspace.sharedWorkspace().openURL_configuration_completionHandler_(url, open_config, None)
-                        time.sleep(0.5)
+                        time.sleep(0.5) # 给熊掌记 0.5 秒把图片塞进数据库
+                        
+        # 3. 核心大招：把所有 Markdown 图片路径转换回熊掌记的原生内部格式！
+        def restore_img_format(m):
+            alt = m.group(1)
+            filename = m.group(2) # 此时可能是 UUID_图片名.jpeg 或 图片名.jpeg
+            # 暴力扒掉前面的 UUID 标识
+            clean_name = re.sub(r'^[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}_', '', filename)
+            # 这样熊掌记才能认得出这是自己的亲骨肉
+            return f"![{alt}]({clean_name})"
+            
+        bear_md_text = re.sub(r'!\[(.*?)\]\(assets/([^)]+)\)', restore_img_format, clean_md_text)
+        
+        # 4. 用原生排版的文本安全地覆盖熊掌记笔记
+        x_replace = f"bear://x-callback-url/add-text?show_window=no&open_note=no&mode=replace_all&id={uuid}"
+        bear_x_callback(x_replace, bear_md_text, '', '')
+        
     else:
-        # 如果是完全【新建】的 textbundle (没有 BearID)，直接使用熊掌记原生导入，完美保留排版
+        # 如果是压根没有 BearID 的全新 textbundle，老规矩，原生开箱即用导入
         md_text = get_tag_from_path(md_text, bundle, export_path)
         write_file(md_file, md_text, mod_dt, 0)
         os.utime(bundle, (-1, mod_dt))
