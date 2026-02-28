@@ -611,6 +611,7 @@ def textbundle_to_bear(md_text, md_file, mod_dt):
     match = re.search(r'\{BearID:(.+?)\}', md_text)
     
     import shutil # 确保导入了文件操作库
+    import urllib.parse # 确保拥有 URL 处理能力
     
     if match:
         uuid = match.group(1)
@@ -633,11 +634,15 @@ def textbundle_to_bear(md_text, md_file, mod_dt):
             img_filename = raw_path.split('/')[-1]
             
             # 判断是否为新图片 (没有熊掌记的 UUID 前缀)
-            if not re.match(r'[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}_', img_filename):
+            if not re.match(r'(?i)[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}_', img_filename):
                 has_new_images = True
                 
-            # 强制重写为标准 assets 路径
-            return f"![{alt}](assets/{img_filename})"
+            # 【修复 1】：必须剥离原有的 UUID 前缀，防止多次同步导致前缀无限嵌套叠加
+            clean_filename = re.sub(r'(?i)^[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}_', '', img_filename)
+            
+            # 【修复 2】：强制重写为标准 assets 路径，并加上 URL 编码保障空格兼容性
+            safe_filename = urllib.parse.quote(clean_filename)
+            return f"![{alt}](assets/{safe_filename})"
             
         fixed_md_text = re.sub(r'!\[(.*?)\]\(([^)]+)\)', fix_and_check_images, clean_md_text)
         
@@ -648,13 +653,22 @@ def textbundle_to_bear(md_text, md_file, mod_dt):
         assets_dir = os.path.join(bundle, 'assets')
         if not os.path.exists(assets_dir):
             os.makedirs(assets_dir)
+            
         matches = re.findall(r'!\[(.*?)\]\(([^)]+)\)', clean_md_text) # 使用旧文本找源文件
         for alt_text, img_path in matches:
             img_filename = urllib.parse.unquote(img_path).split('/')[-1]
+            # 【修复 3】：同样要计算剥离后的纯净文件名，并准备重命名物理文件
+            clean_filename = re.sub(r'(?i)^[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}_', '', img_filename)
+            
             loose_path = os.path.join(bundle, img_filename)
-            asset_path = os.path.join(assets_dir, img_filename)
-            if os.path.exists(loose_path) and not os.path.exists(asset_path):
-                shutil.copy2(loose_path, asset_path)
+            old_asset_path = os.path.join(assets_dir, img_filename)
+            new_asset_path = os.path.join(assets_dir, clean_filename)
+            
+            if os.path.exists(loose_path) and not os.path.exists(new_asset_path):
+                shutil.copy2(loose_path, new_asset_path)
+            elif os.path.exists(old_asset_path) and old_asset_path != new_asset_path:
+                # 【修复 4】：剔除原有 assets 目录中旧文件的 UUID 前缀，重置为纯净名
+                shutil.move(old_asset_path, new_asset_path)
                 
         # 3. 核心分流处理
         if has_new_images:
@@ -677,7 +691,8 @@ def textbundle_to_bear(md_text, md_file, mod_dt):
             def restore_img_format(m):
                 alt = m.group(1)
                 filename = urllib.parse.unquote(m.group(2)).split('/')[-1]
-                clean_name = re.sub(r'^[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}_', '', filename)
+                # 兼容旧版本和忽略大小写的正则表达式
+                clean_name = re.sub(r'(?i)^[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}_', '', filename)
                 return f"![{alt}]({clean_name})"
                 
             bear_md_text = re.sub(r'!\[(.*?)\]\(([^)]+)\)', restore_img_format, clean_md_text)
