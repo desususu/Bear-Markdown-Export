@@ -207,7 +207,8 @@ def export_markdown():
             if file_list:
                 mod_dt = dt_conv(modified)
                 md_text = hide_tags(md_text)
-                md_text += '\n\n<!-- {BearID:' + uuid + '} -->\n'
+                yaml_header = f"---\nBearID: {uuid}\n---\n\n"
+                md_text = yaml_header + md_text
                 for filepath in file_list:
                     note_count += 1
                     # print(filepath)
@@ -610,7 +611,7 @@ def check_if_image_added(md_text, md_file):
 def textbundle_to_bear(md_text, md_file, mod_dt):
     md_text = restore_tags(md_text)
     bundle = os.path.split(md_file)[0]
-    match = re.search(r'\{BearID:(.+?)\}', md_text)
+    match = re.search(r'^---\s*\nBearID:\s*([A-F0-9-]{36})', md_text, re.MULTILINE)
     
     import shutil
     import urllib.parse
@@ -739,7 +740,7 @@ def update_bear_note(md_text, md_file, ts, ts_last_export):
     md_text = restore_tags(md_text)
     md_text = restore_image_links(md_text)
     uuid = ''
-    match = re.search(r'\{BearID:(.+?)\}', md_text)
+    match = re.search(r'^---\s*\nBearID:\s*([A-F0-9-]{36})', md_text, re.MULTILINE)
     sync_conflict = False
     if match:
         uuid = match.group(1)
