@@ -213,7 +213,8 @@ def export_markdown():
 
 def check_image_hybrid(md_text):
     if export_as_hybrids:
-        if re.search(r'\[image:(.+?)\]', md_text):
+        # 同时检测 Bear 1.x 的 [image:...] 和 Bear 2.x 的 ![]() 格式
+        if re.search(r'\[image:(.+?)\]', md_text) or re.search(r'!\[(.*?)\]\((.+?)\)', md_text):
             return True
         else:
             return False
