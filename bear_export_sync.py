@@ -603,8 +603,6 @@ def check_if_image_added(md_text, md_file):
         if not re.match(r'[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}', image_filename):
             return True
     return False       
-
-
 def textbundle_to_bear(md_text, md_file, mod_dt):
     md_text = restore_tags(md_text)
     bundle = os.path.split(md_file)[0]
@@ -614,30 +612,37 @@ def textbundle_to_bear(md_text, md_file, mod_dt):
         uuid = match.group(1)
         # 1. 移除外部专用的 BearID 标记
         clean_md_text = re.sub(r'\<\!-- ?\{BearID\:' + uuid + r'\} ?--\>', '', md_text).rstrip() + '\n'
+        
+        # 【新增防御】：自动将底部“引用式”链接翻译成“内联式”标准链接
+        # 抓取文档底部所有的 [image-1]: assets/... 格式（兼容空格和制表符）
+        refs = dict(re.findall(r'^\[([^\]]+)\]:[ \t]*(\S+).*$', clean_md_text, flags=re.MULTILINE))
+        if refs:
+            # 替换 ![alt][ref] 格式
+            clean_md_text = re.sub(r'!\[([^\]]*)\]\[([^\]]+)\]', lambda m: f"![{m.group(1)}]({refs.get(m.group(2), m.group(2))})", clean_md_text)
+            # 替换 ![ref] 格式
+            clean_md_text = re.sub(r'!\[([^\]]+)\](?!\()', lambda m: f"![{m.group(1)}]({refs.get(m.group(1), m.group(1))})", clean_md_text)
+            # 清除底部的引用定义，保持文档干净
+            clean_md_text = re.sub(r'^\[[^\]]+\]:[ \t]*\S+.*$\n?', '', clean_md_text, flags=re.MULTILINE)
+        
+        # 将干净的纯标准文本写回外部文件
         write_file(md_file, clean_md_text, mod_dt, 0)
         
-        # 2. 扫描并上传外部刚加进来的新图片
-        # 【强力修复】：不再死板地要求 assets/ 路径，捕获任何 Markdown 图片
+        # 2. 扫描并上传外部刚加进来的新图片 (现在的 clean_md_text 已经全部是能识别的标准格式了)
         matches = re.findall(r'!\[(.*?)\]\(([^)]+)\)', clean_md_text)
         for alt_text, img_path in matches:
-            # 解析外部编辑器可能产生的 URL 编码 (比如 %E5%9B%BE%E5%83%8F 转换回中文)
             img_path_unq = urllib.parse.unquote(img_path)
             img_filename = img_path_unq.split('/')[-1]
             
             # 如果文件名不带有 Bear 的长串 UUID，说明是你自己刚刚拖进去的新图片
             if not re.match(r'[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}_', img_filename):
-                # 兼容所有外部编辑器的怪异保存习惯，地毯式搜索图片源文件位置
+                # 地毯式搜索图片源文件位置
                 possible_paths = [
-                    os.path.join(bundle, img_path_unq),       # 相对路径
-                    os.path.join(bundle, 'assets', img_filename), # 标准 textbundle 路径
-                    os.path.join(bundle, img_filename)        # 根目录平铺路径
+                    os.path.join(bundle, img_path_unq),       
+                    os.path.join(bundle, 'assets', img_filename), 
+                    os.path.join(bundle, img_filename)        
                 ]
                 
-                img_full_path = None
-                for p in possible_paths:
-                    if os.path.exists(p):
-                        img_full_path = p
-                        break
+                img_full_path = next((p for p in possible_paths if os.path.exists(p)), None)
                         
                 if img_full_path:
                     safe_path = urllib.parse.quote(img_full_path, safe='')
@@ -652,14 +657,12 @@ def textbundle_to_bear(md_text, md_file, mod_dt):
         def restore_img_format(m):
             alt = m.group(1)
             filename = urllib.parse.unquote(m.group(2)).split('/')[-1]
-            # 暴力扒掉前面的 UUID 标识，恢复成最初的名字
             clean_name = re.sub(r'^[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}_', '', filename)
-            # 这样熊掌记才能认得出这是自己的亲骨肉
             return f"![{alt}]({clean_name})"
             
         bear_md_text = re.sub(r'!\[(.*?)\]\(([^)]+)\)', restore_img_format, clean_md_text)
         
-        # 4. 用原生排版的文本安全地覆盖熊掌记笔记 (绕过存在 Bug 的老旧封装函数)
+        # 4. 用原生排版的文本安全地覆盖熊掌记笔记
         safe_text = urllib.parse.quote(bear_md_text, safe='')
         x_replace = f"bear://x-callback-url/add-text?show_window=no&open_note=no&mode=replace_all&id={uuid}&text={safe_text}"
         url = NSURL.URLWithString_(x_replace)
@@ -668,12 +671,12 @@ def textbundle_to_bear(md_text, md_file, mod_dt):
             time.sleep(0.5)
             
     else:
-        # 如果是压根没有 BearID 的全新 textbundle，老规矩，原生开箱即用导入
         md_text = get_tag_from_path(md_text, bundle, export_path)
         write_file(md_file, md_text, mod_dt, 0)
         os.utime(bundle, (-1, mod_dt))
         subprocess.call(['open', '-a', 'Bear', bundle])
         time.sleep(0.5)
+
 
 def backup_ext_note(md_file):
     if '.textbundle' in md_file:
