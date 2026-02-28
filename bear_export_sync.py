@@ -787,11 +787,11 @@ def insert_link_top_note(md_text, message, uuid):
 def init_gettag_script():
     gettag_script = \
     '''#!/bin/bash
-    if [[ ! -e $1 ]] ; then
+    if [[ ! -e "$1" ]] ; then
     echo 'file missing or not specified'
     exit 0
     fi
-    JSON="$(xattr -p com.apple.metadata:_kMDItemUserTags "$1" | xxd -r -p | plutil -convert json - -o -)"
+    JSON="$(xattr -p com.apple.metadata:_kMDItemUserTags "$1" 2>/dev/null | xxd -r -p | plutil -convert json - -o - 2>/dev/null)"
     echo $JSON > "$2"
     '''
     temp = os.path.join(HOME, 'temp')
