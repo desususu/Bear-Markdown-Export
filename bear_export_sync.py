@@ -55,7 +55,7 @@ only_export_these_tags = []  # Leave this list empty for all notes! See below fo
 export_as_textbundles = True  # Exports as Textbundles with images included
 export_as_hybrids = True  # Exports as .textbundle only if images included, otherwise as .md
                           # Only used if `export_as_textbundles = True`
-export_image_repository = Flase  # Export all notes as md but link images to 
+export_image_repository = False  # Export all notes as md but link images to 
                                  # a common repository exported to: `assets_path` 
                                  # Only used if `export_as_textbundles = False`
 
