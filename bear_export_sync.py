@@ -199,8 +199,8 @@ def export_markdown():
                     note_count += 1
                     # print(filepath)
                     if export_as_textbundles:
-                        if check_image_hybrid(md_text):
-                            # 【注意这里】：增加了 conn, pk 参数
+                        # 【注意这里】：在括号里增加 filepath 变量，将本地路径传给检查函数
+                        if check_image_hybrid(md_text, filepath):
                             make_text_bundle(md_text, filepath, mod_dt, conn, pk)                        
                         else:
                             write_file(filepath + '.md', md_text, mod_dt, creation_date)
@@ -212,9 +212,13 @@ def export_markdown():
     return note_count
 
 
-def check_image_hybrid(md_text):
+def check_image_hybrid(md_text, filepath):
     if export_as_hybrids:
-        # 同时检测 Bear 1.x 的 [image:...] 和 Bear 2.x 的 ![]() 格式
+        # 【新增逻辑】：如果本地已经存在这个 .textbundle 文件夹，强制保持该格式不变
+        if os.path.exists(filepath + '.textbundle'):
+            return True
+            
+        # 【原有逻辑】：否则，通过检查文本中是否含有图片来判断
         if re.search(r'\[image:(.+?)\]', md_text) or re.search(r'!\[(.*?)\]\((.+?)\)', md_text):
             return True
         else:
