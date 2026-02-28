@@ -52,10 +52,10 @@ hide_tags_in_comment_block = False  # Hide tags in HTML comments: `<!-- #mytag -
 only_export_these_tags = []  # Leave this list empty for all notes! See below for sample
 # only_export_these_tags = ['bear/github', 'writings'] 
 
-export_as_textbundles = True  # Exports as Textbundles with images included
-export_as_hybrids = True  # Exports as .textbundle only if images included, otherwise as .md
+# export_as_textbundles = True  # Exports as Textbundles with images included
+# export_as_hybrids = True  # Exports as .textbundle only if images included, otherwise as .md
                           # Only used if `export_as_textbundles = True`
-export_image_repository = False  # Export all notes as md but link images to 
+# export_image_repository = False  # Export all notes as md but link images to 
                                  # a common repository exported to: `assets_path` 
                                  # Only used if `export_as_textbundles = False`
 
@@ -84,10 +84,21 @@ parser.add_argument("--backup", default=default_backup_folder, help="Path where 
 parser.add_argument("--images", default=None, help="Path where images will be stored")
 parser.add_argument("--skipImport", action="store_const", const=True, default=False, help="When present, the script only exports from Bear to Markdown; it skips the import step.")
 parser.add_argument("--excludeTag", action="append", default=[], help="Don't export notes with this tag. Can be used multiple times.")
-parser.add_argument("--hideTags", action="store_const", const=True, default=False, help="Wrap tags in <!-- -->")
+parser.add_argument("--hideTags", action="store_const", const=True, default=False, help="Wrap tags in ")
+# 【新增】接收格式参数，默认值为 md
+parser.add_argument("--format", choices=['tb', 'md'], default='md', help="Export format: 'tb' for Textbundles/Hybrids, 'md' for standard Markdown with images.")
 
 parsed_args = vars(parser.parse_args())
 
+# 【新增】根据传入的格式参数，动态设置导出模式
+if parsed_args.get("format") == 'tb':
+    export_as_textbundles = True
+    export_as_hybrids = True
+    export_image_repository = False
+else:
+    export_as_textbundles = False
+    export_as_hybrids = False
+    export_image_repository = True
 
 set_logging_on = True
 
