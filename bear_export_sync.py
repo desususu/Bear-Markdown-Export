@@ -200,7 +200,8 @@ def export_markdown():
                     # print(filepath)
                     if export_as_textbundles:
                         if check_image_hybrid(md_text):
-                            make_text_bundle(md_text, filepath, mod_dt)                        
+                            # 【注意这里】：增加了 conn, pk 参数
+                            make_text_bundle(md_text, filepath, mod_dt, conn, pk)                        
                         else:
                             write_file(filepath + '.md', md_text, mod_dt, creation_date)
                     elif export_image_repository:
@@ -222,7 +223,7 @@ def check_image_hybrid(md_text):
         return True
 
 
-def make_text_bundle(md_text, filepath, mod_dt):
+def make_text_bundle(md_text, filepath, mod_dt, conn, pk):
     '''
     Exports as Textbundles with images included 
     '''
@@ -238,15 +239,47 @@ def make_text_bundle(md_text, filepath, mod_dt):
     "creatorIdentifier" : "net.shinyfrog.bear",
     "version" : 2
     }'''
+    
+    # 1. 兼容旧版本 Bear 1 的图片格式
     matches = re.findall(r'\[image:(.+?)\]', md_text)
     for match in matches:
         image_name = match
         new_name = image_name.replace('/', '_')
         source = os.path.join(bear_image_path, image_name)
         target = os.path.join(assets_path, new_name)
-        shutil.copy2(source, target)
-
+        if os.path.exists(source):
+            shutil.copy2(source, target)
     md_text = re.sub(r'\[image:(.+?)/(.+?)\]', r'![](assets/\1_\2)', md_text)
+
+    # 2. 兼容新版本 Bear 2 的图片格式
+    image_map = {}
+    files = conn.execute("SELECT * FROM `ZSFNOTEFILE` WHERE ZNOTE = ?", (pk,))
+    for row in files:
+        filename = row["ZFILENAME"]
+        uuid = row["ZUNIQUEIDENTIFIER"]
+        image_map[filename] = uuid
+    
+    def replace_markdown_image(match):
+        alt_text = match.group(1)
+        image_url = match.group(2)
+        if image_url.startswith("http"):
+            return match.group(0)
+        
+        image_filename = urllib.parse.unquote(image_url)
+        file_uuid = image_map.get(image_filename)
+        
+        if file_uuid:
+            source = os.path.join(bear_image_path, file_uuid, image_filename)
+            new_name = f"{file_uuid}_{image_filename}"
+            target = os.path.join(assets_path, new_name)
+            if os.path.exists(source):
+                shutil.copy2(source, target)
+            encoded_target = urllib.parse.quote(f"assets/{new_name}")
+            return f"![{alt_text}]({encoded_target})"
+        return match.group(0)
+
+    md_text = re.sub(r'!\[(.*?)\]\((.+?)\)', replace_markdown_image, md_text)
+    
     write_file(bundle_path + '/text.md', md_text, mod_dt, 0)
     write_file(bundle_path + '/info.json', info, mod_dt, 0)
     os.utime(bundle_path, (-1, mod_dt))
