@@ -616,37 +616,57 @@ def textbundle_to_bear(md_text, md_file, mod_dt):
         clean_md_text = re.sub(r'\<\!-- ?\{BearID\:' + uuid + r'\} ?--\>', '', md_text).rstrip() + '\n'
         write_file(md_file, clean_md_text, mod_dt, 0)
         
-        # 2. 扫描并上传外部刚加进来的新图片 (通过 add-file 接口)
-        matches = re.findall(r'!\[.*?\]\((assets/[^)]+)\)', clean_md_text)
-        for img_rel_path in matches:
-            img_rel_path_unq = urllib.parse.unquote(img_rel_path)
-            img_filename = img_rel_path_unq.split('/')[-1]
+        # 2. 扫描并上传外部刚加进来的新图片
+        # 【强力修复】：不再死板地要求 assets/ 路径，捕获任何 Markdown 图片
+        matches = re.findall(r'!\[(.*?)\]\(([^)]+)\)', clean_md_text)
+        for alt_text, img_path in matches:
+            # 解析外部编辑器可能产生的 URL 编码 (比如 %E5%9B%BE%E5%83%8F 转换回中文)
+            img_path_unq = urllib.parse.unquote(img_path)
+            img_filename = img_path_unq.split('/')[-1]
+            
             # 如果文件名不带有 Bear 的长串 UUID，说明是你自己刚刚拖进去的新图片
             if not re.match(r'[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}_', img_filename):
-                img_full_path = os.path.join(bundle, img_rel_path_unq)
-                if os.path.exists(img_full_path):
+                # 兼容所有外部编辑器的怪异保存习惯，地毯式搜索图片源文件位置
+                possible_paths = [
+                    os.path.join(bundle, img_path_unq),       # 相对路径
+                    os.path.join(bundle, 'assets', img_filename), # 标准 textbundle 路径
+                    os.path.join(bundle, img_filename)        # 根目录平铺路径
+                ]
+                
+                img_full_path = None
+                for p in possible_paths:
+                    if os.path.exists(p):
+                        img_full_path = p
+                        break
+                        
+                if img_full_path:
                     safe_path = urllib.parse.quote(img_full_path, safe='')
+                    # 使用 mode=append 静默将图片塞入熊掌记数据库
                     x_file = f"bear://x-callback-url/add-file?id={uuid}&mode=append&filepath={safe_path}"
                     url = NSURL.URLWithString_(x_file)
                     if url is not None:
                         NSWorkspace.sharedWorkspace().openURL_configuration_completionHandler_(url, open_config, None)
-                        time.sleep(0.5) # 给熊掌记 0.5 秒把图片塞进数据库
+                        time.sleep(0.5) 
                         
         # 3. 核心大招：把所有 Markdown 图片路径转换回熊掌记的原生内部格式！
         def restore_img_format(m):
             alt = m.group(1)
-            filename = m.group(2) # 此时可能是 UUID_图片名.jpeg 或 图片名.jpeg
-            # 暴力扒掉前面的 UUID 标识
+            filename = urllib.parse.unquote(m.group(2)).split('/')[-1]
+            # 暴力扒掉前面的 UUID 标识，恢复成最初的名字
             clean_name = re.sub(r'^[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}_', '', filename)
             # 这样熊掌记才能认得出这是自己的亲骨肉
             return f"![{alt}]({clean_name})"
             
-        bear_md_text = re.sub(r'!\[(.*?)\]\(assets/([^)]+)\)', restore_img_format, clean_md_text)
+        bear_md_text = re.sub(r'!\[(.*?)\]\(([^)]+)\)', restore_img_format, clean_md_text)
         
-        # 4. 用原生排版的文本安全地覆盖熊掌记笔记
-        x_replace = f"bear://x-callback-url/add-text?show_window=no&open_note=no&mode=replace_all&id={uuid}"
-        bear_x_callback(x_replace, bear_md_text, '', '')
-        
+        # 4. 用原生排版的文本安全地覆盖熊掌记笔记 (绕过存在 Bug 的老旧封装函数)
+        safe_text = urllib.parse.quote(bear_md_text, safe='')
+        x_replace = f"bear://x-callback-url/add-text?show_window=no&open_note=no&mode=replace_all&id={uuid}&text={safe_text}"
+        url = NSURL.URLWithString_(x_replace)
+        if url is not None:
+            NSWorkspace.sharedWorkspace().openURL_configuration_completionHandler_(url, open_config, None)
+            time.sleep(0.5)
+            
     else:
         # 如果是压根没有 BearID 的全新 textbundle，老规矩，原生开箱即用导入
         md_text = get_tag_from_path(md_text, bundle, export_path)
@@ -654,7 +674,6 @@ def textbundle_to_bear(md_text, md_file, mod_dt):
         os.utime(bundle, (-1, mod_dt))
         subprocess.call(['open', '-a', 'Bear', bundle])
         time.sleep(0.5)
-
 
 def backup_ext_note(md_file):
     if '.textbundle' in md_file:
