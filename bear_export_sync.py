@@ -381,12 +381,13 @@ def process_image_links(md_text, filepath, conn, pk):
 
 
 def restore_image_links(md_text):
-    # TODO: add new external images to Bear when necessary
+    # 修复：移除旧版 Bear 1 [image:...] 格式转换，直接剥离 UUID 前缀适配 Bear 2
     if export_as_textbundles:
-        return re.sub(r'!\[(.*?)\]\(assets/(.+?)_(.+?)( ".+?")?\) ?', r'[image:\2/\3]\4 \1', md_text)
+        return re.sub(r'!\[(.*?)\]\(assets/.+?_(.+?)( ".+?")?\) ?', r'![\1](\2)', md_text)
     elif export_image_repository:
         relative_asset_path = os.path.relpath(assets_path, export_path)
         return re.sub(r'!\[(.*?)\]\(' + re.escape(relative_asset_path) + r'/(.+?)/(.+?)\)', r'![\1](\3)', md_text)
+    return md_text
         
 
 
@@ -514,6 +515,18 @@ def rsync_files_from_temp():
             subprocess.call(['rsync', '-r', '-t', '-E',
                             temp_path + "/", dest_path])
 
+def convert_ref_links_to_inline(md_text):
+    # 将外部编辑器产生的引用式图片链接转换为标准的内联式链接
+    refs = dict(re.findall(r'^\[([^\]]+)\]:\s*(\S+).*$', md_text, flags=re.MULTILINE))
+    if not refs:
+        return md_text
+    def repl(m):
+        return f"![{m.group(1)}]({refs.get(m.group(2), m.group(2))})"
+    md_text = re.sub(r'!\[([^\]]*)\]\[([^\]]+)\]', repl, md_text)
+    def repl_imp(m):
+        return f"![{m.group(1)}]({refs.get(m.group(1), m.group(1))})"
+    md_text = re.sub(r'!\[([^\]]+)\](?!\()', repl_imp, md_text)
+    return md_text
 
 def sync_md_updates():
     updates_found = False
@@ -541,6 +554,8 @@ def sync_md_updates():
                         time.sleep(5)
                     updates_found = True
                     md_text = read_file(md_file)
+                    # 【新增下面这一行】：在读取文件后立即修复图片格式
+                    md_text = convert_ref_links_to_inline(md_text) 
                     backup_ext_note(md_file)
                     if check_if_image_added(md_text, md_file):
                         textbundle_to_bear(md_text, md_file, ts)
@@ -561,12 +576,12 @@ def sync_md_updates():
 def check_if_image_added(md_text, md_file):
     if not '.textbundle/' in md_file:
         return False
-    matches = re.findall(r'!\[.*?\]\(assets/(.+?_).+?\)', md_text)
-    for image_match in matches:
-        'F89CDA3D-3FCC-4E92-88C1-CC4AF46FA733-10097-00002BBE9F7FF804_IMG_2280.JPG'
-        if not re.match(r'[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}-[0-9A-F]{3,5}-[0-9A-F]{16}_', image_match):
+    # 修复：只要 assets/ 里的图片不是以 Bear 的长串 UUID 开头，就认定为新添加的外部图片
+    matches = re.findall(r'!\[.*?\]\(assets/(.+?)\)', md_text)
+    for image_filename in matches:
+        if not re.match(r'[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}', image_filename):
             return True
-    return False        
+    return False       
 
 
 def textbundle_to_bear(md_text, md_file, mod_dt):
