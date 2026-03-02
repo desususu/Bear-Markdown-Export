@@ -1,94 +1,302 @@
-## Markdown export and sync of Bear notes
+# Bear Markdown Export & Sync
 
-***bear_export_sync.py***   
-*Version 1.4, 2020-01-11*
+> **A complete refactor of the original [rovest/Bear-Markdown-Export](https://github.com/rovest/Bear-Markdown-Export), updated for Bear 2.0, with major performance improvements, a real-time sync daemon, and improved image handling.**
 
-Python script for export and roundtrip sync of Bear's notes to OneDrive, Dropbox, etc. and edit online with [StackEdit](https://stackedit.io/app), or use a markdown editor like *Typora* on Windows or a suitable app on Android. Remote edits and new notes get synced back into Bear with this script.
+**中文文档请见 [README_zh.md](README_zh.md)**
 
-**See also: [Bear Markdown and textbundle import – with tags from file and folder](https://github.com/rovest/Bear-Markdown-Export/blob/master/Bear%20Import.md)**
+---
 
-Set up seamless syncing with Ulysses’ external folders on Mac, with images included!  
-Write and add photos in Bear, then reorder, glue, and publish, export, or print with styles in Ulysses—  
-bears and butterflies are best friends ;)  
-(PS. The manual order you set for notes in Ulysses' external folder, is maintained during syncs, unless title is changed.) 
+## ⚠️ Important Warning — Back Up First
 
-Suitable for use with https://github.com/andymatuschak/note-link-janitor.
+**Before running these scripts for the first time, back up your Bear notes.**
 
-BEAR IN MIND! This is a free to use version, and please improve or modify as needed. But do be careful! both `rsync` and `shutil.rmtree` used here, are powerful commands that can wipe clean a whole folder tree or even your complete HD if paths are set incorrectly! Also, be safe, take a fresh backup of both Bear and your Mac before first run.
+Go to **Bear → File → Backup Notes…** and save the archive somewhere safe.
+Also back up your Mac with Time Machine or your preferred tool.
 
-*See also: [Bear Power Pack](https://github.com/rovest/Bear-Power-Pack/blob/master/README.md)*
+Both `rsync` and `shutil.rmtree` are used internally. An incorrectly configured path could overwrite or delete files. Always verify your config before the first run.
+
+---
+
+## Overview
+
+This project provides two scripts that work together:
+
+| Script | Role |
+|---|---|
+| `bear_export_sync.py` | Core engine — exports Bear notes to Markdown / Textbundle, syncs external edits back into Bear |
+| `dual_sync.py` | Daemon — runs the core engine automatically, triggered by real-time file-system events |
+
+### What it does
+
+- Exports all Bear notes to plain `.md` files or `.textbundle` packages (images included)
+- Watches for edits made in external editors (Obsidian, Typora, Ulysses, etc.) and syncs them back into Bear
+- Runs as a background daemon with near-instant reaction to Bear note changes (~1–2 seconds)
+- Supports both Markdown and Textbundle formats simultaneously via dual export folders
+
+---
+
+## Compatibility
+
+- **macOS only** — uses macOS-native frameworks (`AppKit`, `NSWorkspace`, `FSEvents`)
+- **Bear 2.0** — reads Bear's current SQLite database schema and Group Container paths
+- **Python 3.9+** recommended (3.6+ minimum)
+
+---
+
+## What's New in This Refactor
+
+### Performance Optimizations
+
+- **Pre-compiled regex patterns** — all regular expressions are compiled once at module load rather than on every note, yielding a significant speed-up on large vaults
+- **Incremental image copying** — images are now copied directly and incrementally during the export loop itself; the previous separate rsync pass over the entire image store has been eliminated
+- **Timestamp-based change detection** — the script checks the modification time of Bear's `database.sqlite` before doing any work; if nothing has changed, it exits immediately without touching the disk
+- **Fast-exit on no changes** — both the MD and TB export phases return exit code `0` when nothing needs syncing, so the daemon can skip unnecessary work
+
+### Real-Time Sync Daemon (`dual_sync.py`)
+
+- **FSEvents-triggered export** — watches Bear's live SQLite WAL file; when Bear commits a note save, an export cycle fires within 1–2 seconds instead of waiting for the next polling interval
+- **File-write quiesce guard** — monitors the export folders with `watchdog`; if an external editor is actively writing files, the sync timer pauses and resumes only after the folder has been quiet for a configurable number of seconds (default: 5 s), preventing a half-written file from being imported back into Bear
+- **Sync window** — configurable active hours (e.g., 06:00–23:20); the daemon sleeps outside this window
+- **Editor-active detection** — detects if Bear, Obsidian, Typora, or Ulysses is the frontmost app and defers sync to avoid conflicts
+- **Manual trigger** — send `SIGUSR1` (or run `python3 dual_sync.py --trigger`) to force an immediate sync cycle bypassing all guards
+- **Hot config reload** — re-reads `sync_config.json` on every loop tick; no restart required for config changes
+
+### Improved Image Handling
+
+- Images are resolved from Bear's internal image store and copied to the export folder during export
+- Textbundle exports include images as `assets/` inside the `.textbundle` package
+- Markdown exports link to a shared `BearImages/` repository (or a custom `--images` path)
+- UUID prefixes are stripped from image filenames for cleaner output
+- Both `![alt](url)` and `![[wikilink]]` image syntaxes are handled correctly on round-trip sync back into Bear
+
+### Bear 2.0 Compatibility
+
+- Reads the current Group Container path: `~/Library/Group Containers/9K33E3U3T4.net.shinyfrog.bear/Application Data/database.sqlite`
+- Supports the current Bear note image storage layout
+- Bear IDs embedded in notes use the modern `[//]: # ({BearID:...})` format (legacy HTML comment format is also recognized for backward compatibility)
+
+---
+
+## Requirements
+
+### System
+
+- macOS 12 Monterey or later (recommended)
+- Bear app installed and signed in
+
+### Python Packages
+
+Install all dependencies with:
+
+```bash
+pip install pyobjc-framework-Cocoa watchdog
+```
+
+| Package | Purpose | Required? |
+|---|---|---|
+| `pyobjc-framework-Cocoa` | `AppKit` / `NSWorkspace` — opens Bear via URL scheme | **Required** |
+| `watchdog` | FSEvents observer for real-time DB and folder monitoring | Strongly recommended |
+
+> If `watchdog` is not installed, the daemon falls back to interval-only polling and the file-write quiesce guard is disabled. A warning is printed at startup.
+
+### Standard Library (no install needed)
+
+`sqlite3`, `re`, `subprocess`, `shutil`, `argparse`, `json`, `threading`, `signal`, `logging`
+
+---
+
+## Installation
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/desususu/Bear-Markdown-Export.git
+cd Bear-Markdown-Export
+
+# 2. (Recommended) Create a virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# 3. Install dependencies
+pip install pyobjc-framework-Cocoa watchdog
+
+# 4. Back up your Bear notes before first run!
+#    Bear → File → Backup Notes…
+```
+
+---
+
+## Configuration
+
+### `sync_config.json`
+
+On first run, `dual_sync.py` creates a default `sync_config.json` next to itself and exits, asking you to review the paths.
+
+```json
+{
+    "script_path":            "./bear_export_sync.py",
+    "folder_md":              "./Export/MD_Export",
+    "folder_tb":              "./Export/TB_Export",
+    "backup_md":              "./Backup/MD_Backup",
+    "backup_tb":              "./Backup/TB_Backup",
+    "sync_interval_seconds":  180,
+    "sync_on_startup":        false,
+    "write_quiet_seconds":    5,
+    "fast_trigger_on_db_change": true,
+    "sync_window": {
+        "start_hour":  6,  "start_minute":  0,
+        "end_hour":   23,  "end_minute":   20
+    }
+}
+```
+
+| Key | Description |
+|---|---|
+| `script_path` | Path to `bear_export_sync.py` (relative or absolute) |
+| `folder_md` | Where Markdown exports are written |
+| `folder_tb` | Where Textbundle exports are written |
+| `backup_md` / `backup_tb` | Backup folders for conflict resolution (must be outside `folder_md` / `folder_tb`) |
+| `sync_interval_seconds` | Fallback polling interval in seconds (minimum 30) |
+| `sync_on_startup` | Run a full sync immediately when the daemon starts |
+| `write_quiet_seconds` | Seconds of folder inactivity required before syncing (prevents importing half-written files) |
+| `fast_trigger_on_db_change` | Enable FSEvents-based instant export when Bear saves a note |
+| `sync_window` | Active hours; daemon sleeps outside this range |
+
+---
 
 ## Usage
 
+### Run the daemon (recommended)
+
+```bash
+python3 dual_sync.py
 ```
-python bear_export_sync.py --out ~/Notes/Bear --backup ~/Notes/Backup
+
+The daemon runs in the foreground. Use a terminal multiplexer (`tmux`, `screen`) or a launchd plist to keep it running in the background.
+
+### Run one sync cycle and exit (for cron / launchd)
+
+```bash
+python3 dual_sync.py --once
 ```
 
-See `--help` for more.
+### Trigger an immediate sync on the running daemon
 
-## Features
+```bash
+python3 dual_sync.py --trigger
+```
 
-* Bear notes exported as plain Markdown or Textbundles with images.
-* Syncs external edits back to Bear with original image links intact. 
-* New external `.md` files or `.textbundles` are added.  
-(Tags created from sub folder name)
-* Export option: Make nested folders from tags.   
-For first tag only, or all tags (duplicates notes)
-* Export option: Include or exclude export of notes with specific tags.
-* Export option: Export as `.textbundles` with images included. 
-* Or as: `.md` with links to common image repository 
-* Export option: Hide tags in HTML comments like: `<!-- #mytag -->` if `hide_tags_in_comment_block = True`
-* **NEW** Hybrid export: `.textbundles` of notes with images, otherwise regular `.md` (Makes it easier to browse and edit on other platforms.)
-* **NEW** Writes log to `bear_export_sync_log.txt` in `BearSyncBackup` folder.
+### Check daemon status
 
-Edit your Bear notes online in browser on [OneDrive.com](https://onedrive.live.com). It has a ok editor for plain text/markdown. Or with [StackEdit](https://stackedit.io/app), an amazing online markdown editor that can sync with *Dropbox* or *Google Drive*
+```bash
+python3 dual_sync.py --status
+```
 
-Read and edit your Bear notes on *Windows* or *Android* with any markdown editor of choice. Remote edits or new notes will be synced back into Bear again. *Typora* works great on Windows, and displays images of text bundles as well.
+### Run the core script directly
 
-NOTE! If syncing with Ulysses’ external folders on Mac, remember to edit that folder settings to `.textbundle` and `Inline Links`!
+```bash
+# Export only (Markdown)
+python3 bear_export_sync.py --out ~/Notes/Bear --backup ~/Notes/Backup --format md
 
-Run script manually or add it to a cron job for automatic syncing (every 5 – 15 minutes, or whatever you prefer).  
-([LaunchD Task Scheduler](https://itunes.apple.com/us/app/launchd-task-scheduler/id620249105?mt=12) Is easy to configure and works very well for this) 
+# Export only (Textbundle)
+python3 bear_export_sync.py --out ~/Notes/Bear --backup ~/Notes/Backup --format tb
 
+# Skip export, import only
+python3 bear_export_sync.py --out ~/Notes/Bear --backup ~/Notes/Backup --skipExport
 
-### Syncs external edits back into Bear
-Script first checks for external edits in Markdown files or textbundles (previously exported from Bear as described below):
+# Skip import, export only
+python3 bear_export_sync.py --out ~/Notes/Bear --backup ~/Notes/Backup --skipImport
 
-* It replaces text in original note with `bear://x-callback-url/add-text?mode=replace` command   
-(That way keeping original note ID and creation date)  
-If any changes to title, new title will be added just below original title.  
-(`mode=replace` does not replace title)
-* Original note in `sqlite` database and external edit are both backed up as markdown-files to BearSyncBackup folder before import to bear.
-* If a sync conflict, both original and new version will be in Bear (the new one with a sync conflict message and link to original).
-* New notes created online, are just added to Bear  
-(with the `bear://x-callback-url/create` command)
-* If a textbundle gets new images from an external app, it will be opened and imported as a new note in Bear, with message and link to original note.  
-(The `subprocess.call(['open', '-a', '/applications/bear.app', bundle])` command is used for this)
+# Exclude notes with a specific tag
+python3 bear_export_sync.py --out ~/Notes/Bear --backup ~/Notes/Backup --excludeTag private
 
+# Use a custom image folder
+python3 bear_export_sync.py --out ~/Notes/Bear --backup ~/Notes/Backup --images ~/Notes/Images
+```
 
-### Markdown export to Dropbox, OneDrive, or other:
-Then exports all notes from Bear's database.sqlite as plain markdown files:
+---
 
-* Checks modified timestamp on database.sqlite, so exports only when needed.
-* Sets Bear note's modification date on exported markdown files.
-* Appends Bear note's creation date to filename to avoid “title-filename-collisions”
-* Note IDs are included at bottom of markdown files to match original note on sync back:  
-	{BearID:730A5BD2-0245-4EF7-BE16-A5217468DF0E-33519-0000429ADFD9221A}  
-(these ID's are striped off again when synced back into Bear)
-* Uses rsync for copying (from a temp folder), so only changed notes will be synced to Dropbox (or other sync services)
-* rsync also takes care of deleting trashed notes
-* "Hides” tags from being displayed as H1 in other markdown apps by adding `period+space` in front of first tag on a line:   
-`. #bear #idea #python`   
-* Or hide tags in HTML comment blocks like: `<!-- #mytag -->` if `hide_tags_in_comment_block = True`   
-(these are striped off again when synced back into Bear)
-* Makes subfolders named with first tag in note if `make_tag_folders = True`
-* Files can now be copied to multiple tag-folders if `multi_tags = True`
-* Export can now be restricted to a list of spesific tags: `limit_export_to_tags = ['bear/github', 'writings']`  
-or leave list empty for all notes: `limit_export_to_tags = []`
-* Can export and link to images in common image repository
-* Or export as textbundles with images included 
+## How Sync Works
 
+### Export (Bear → disk)
 
-You have Bear on Mac but also want your notes on your Android phone, on Linux or Windows machine at your office. Or you want them available online in a browser from any desktop computer. Here is a solution (or call it workaround) for now, until Bear comes with an online, Windows, or Android solution ;)
+1. Checks `database.sqlite` modification time; exits immediately if nothing changed
+2. Queries all notes from Bear's SQLite database
+3. Writes each note as `.md` or `.textbundle` to a temp folder
+4. Strips Bear-specific syntax (image references, tag formatting) for external compatibility
+5. Appends a `BearID` footer so the note can be matched on re-import
+6. Uses `rsync` to copy only changed files from the temp folder to the export folder (Dropbox, Obsidian vault, etc.)
 
-Happy syncing! ;)
+### Import (disk → Bear)
+
+1. Scans the export folder for `.md` / `.textbundle` files modified since last sync
+2. Matches each file to its original Bear note via the embedded `BearID`
+3. Uses the `bear://x-callback-url/add-text?mode=replace` URL scheme to update the note body, preserving the original creation date and note ID
+4. On sync conflict, both versions are kept in Bear with a conflict notice
+5. New files without a `BearID` are created as new Bear notes
+
+---
+
+## Notes & Caveats
+
+### Obsidian Users — Required Heading Format
+
+If you are using the export folder as an Obsidian vault, **every note must start with a `#` heading on the first line**.
+
+```markdown
+# My Note Title
+
+Note body here...
+```
+
+If a note does not start with `# `, Obsidian cannot derive the filename from the title, which causes a bug where file links break and notes cannot be properly recognized. Bear normally uses the first line as the title — make sure it is formatted as a Markdown heading.
+
+### Tag Handling
+
+- Tags are reformatted on export so they do not render as `H1` headings in other editors
+- If `hide_tags_in_comment_block = True` in the script, tags are wrapped in HTML comments (`<!-- #tag -->`) and restored transparently on import
+
+### Conflict Resolution
+
+- If the same note is edited in both Bear and an external editor between sync cycles, both versions are preserved in Bear
+- The newer version gets a sync-conflict notice with a link to the original
+
+### Ulysses External Folders
+
+- Set the Ulysses external folder format to **Textbundle** and **Inline Links**
+- The manual sort order you set in Ulysses is preserved across syncs unless the note title changes
+
+### Large Vaults
+
+- First export of a large Bear library may take a minute or two
+- Subsequent syncs are fast because only changed notes are processed
+
+### `sync_config.json` is excluded from git
+
+The config file contains local paths and is listed in `.gitignore`. Do not commit it to version control.
+
+---
+
+## Project Structure
+
+```
+Bear-Markdown-Export/
+├── bear_export_sync.py   # Core export/import engine
+├── dual_sync.py          # Real-time sync daemon
+├── sync_config.json      # Local config (not committed)
+├── LICENSE
+└── README.md
+```
+
+---
+
+## Credits
+
+- Original author: [rovest](https://github.com/rovest) ([@rorves](https://twitter.com/rorves))
+- Modified by: [andymatuschak](https://github.com/andymatuschak) ([@andy_matuschak](https://twitter.com/andy_matuschak))
+- Further refactored and maintained by: [desususu](https://github.com/desususu)
+
+---
+
+## License
+
+MIT License — see [LICENSE](LICENSE) for details.
