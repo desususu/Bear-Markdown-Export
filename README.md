@@ -121,8 +121,8 @@ External editor edits an MD/TB file
 
 ```bash
 # 1. Clone
-git clone https://github.com/desususu/Bear-Markdown-Export.git
-cd Bear-Markdown-Export
+git clone https://github.com/desususu/B2OU-Bear-to-Obsidian-Ulysses-.git
+cd B2OU-Bear-to-Obsidian-Ulysses-
 
 # 2. Launch the interactive setup
 bash run.sh
