@@ -5,8 +5,8 @@ Subcommands
 -----------
 export     Export Bear notes to Markdown / TextBundle files.
 import     Import changed Markdown / TextBundle files back into Bear.
-sync       Run one complete export + import cycle (shorthand).
-gate       Smart sync gate (run-once) — checks guards before syncing.
+sync       Smart sync (run-once) — checks guards before syncing (reads JSON config).
+sync-manual Run one complete export + import cycle with CLI flags.
 daemon     Start the FSEvents-driven sync daemon.
 guard-test Test all three editing-guard layers and report results.
 
@@ -14,8 +14,8 @@ Usage examples
 --------------
   python -m b2ou export --out ~/Notes --backup ~/NotesBak
   python -m b2ou import --out ~/Notes --backup ~/NotesBak
-  python -m b2ou sync   --out ~/Notes --backup ~/NotesBak
-  python -m b2ou gate
+  python -m b2ou sync
+  python -m b2ou sync-manual --out ~/Notes --backup ~/NotesBak
   python -m b2ou daemon
   python -m b2ou guard-test
 """
@@ -83,6 +83,8 @@ def _add_export_args(p: argparse.ArgumentParser) -> None:
                    help="Strip #tags from exported Markdown")
     p.add_argument("--tag-folders", action="store_true",
                    help="Organise notes into subdirectories by tag")
+    p.add_argument("--clean-export", action="store_true",
+                   help="Export clean Markdown without BearID footers (disables import matching)")
     p.add_argument("-v", "--verbose", action="store_true")
 
 
@@ -97,6 +99,7 @@ def _build_export_config(args: argparse.Namespace):
         exclude_tags=args.exclude_tags,
         hide_tags=args.hide_tags,
         make_tag_folders=args.tag_folders,
+        clean_export=getattr(args, "clean_export", False),
     )
 
 
@@ -153,16 +156,18 @@ def cmd_import(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_sync(args: argparse.Namespace) -> int:
-    """Run a full export + import cycle."""
-    # Import first, then export (hub-and-spoke: Bear is truth)
-    import_rc = cmd_import(args)
+def cmd_sync_manual(args: argparse.Namespace) -> int:
+    """Run a full export + import cycle using CLI arguments."""
+    import_rc = 0
+    if not getattr(args, "clean_export", False):
+        # Import first, then export (hub-and-spoke: Bear is truth)
+        import_rc = cmd_import(args)
     export_rc = cmd_export(args)
     return max(import_rc, export_rc)
 
 
-def cmd_gate(args: argparse.Namespace) -> int:
-    """Smart sync gate (run-once)."""
+def cmd_sync(args: argparse.Namespace) -> int:
+    """Smart sync gate (run-once). Uses JSON configuration."""
     script_dir = Path(args.config).parent if args.config else Path.cwd()
     config_file = Path(args.config) if args.config else script_dir / "b2ou_config.json"
 
@@ -173,14 +178,14 @@ def cmd_gate(args: argparse.Namespace) -> int:
         print(str(exc))
         return 2
 
-    log_file = script_dir / "b2ou_gate.log"
+    log_file = script_dir / "b2ou_sync.log"
     setup_logging(log_file, args.verbose)
 
     from b2ou.daemon import run_once
     return run_once(
         cfg, script_dir,
         force=args.force,
-        export_only=args.export_only,
+        export_only=args.export_only or args.clean_export or cfg.clean_export,
         dry_run=args.dry_run,
     )
 
@@ -201,7 +206,10 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     setup_logging(log_file, args.verbose)
 
     from b2ou.daemon import SyncDaemon
-    daemon = SyncDaemon(cfg, script_dir, export_only=args.export_only)
+    daemon = SyncDaemon(
+        cfg, script_dir,
+        export_only=args.export_only or args.clean_export or cfg.clean_export,
+    )
     daemon.run()
     return 0
 
@@ -263,23 +271,25 @@ def main(argv: list[str] | None = None) -> int:
     _add_export_args(p_import)
     p_import.set_defaults(func=cmd_import)
 
-    # ── sync ─────────────────────────────────────────────────────────────
-    p_sync = sub.add_parser("sync", help="Run a full import + export cycle")
-    _add_export_args(p_sync)
-    p_sync.set_defaults(func=cmd_sync)
+    # ── sync-manual ──────────────────────────────────────────────────────
+    p_sync_manual = sub.add_parser("sync-manual", help="Run a manual import + export cycle (ignores JSON config)")
+    _add_export_args(p_sync_manual)
+    p_sync_manual.set_defaults(func=cmd_sync_manual)
 
-    # ── gate ─────────────────────────────────────────────────────────────
-    p_gate = sub.add_parser("gate", help="Run-once sync gate (launchd mode)")
-    p_gate.add_argument("--config", default=None, metavar="FILE",
+    # ── sync ─────────────────────────────────────────────────────────────
+    p_sync = sub.add_parser("sync", help="Run-once smart sync (uses JSON config)")
+    p_sync.add_argument("--config", default=None, metavar="FILE",
                         help="Path to b2ou_config.json")
-    p_gate.add_argument("--force", action="store_true",
+    p_sync.add_argument("--force", action="store_true",
                         help="Bypass all guards and sync immediately")
-    p_gate.add_argument("--export-only", action="store_true",
+    p_sync.add_argument("--export-only", action="store_true",
                         help="Skip import phase")
-    p_gate.add_argument("--dry-run", action="store_true",
+    p_sync.add_argument("--clean-export", action="store_true",
+                        help="Export clean Markdown without BearID footers (forces export-only)")
+    p_sync.add_argument("--dry-run", action="store_true",
                         help="Show what would happen without actually syncing")
-    p_gate.add_argument("-v", "--verbose", action="store_true")
-    p_gate.set_defaults(func=cmd_gate)
+    p_sync.add_argument("-v", "--verbose", action="store_true")
+    p_sync.set_defaults(func=cmd_sync)
 
     # ── daemon ───────────────────────────────────────────────────────────
     p_daemon = sub.add_parser("daemon", help="Start the FSEvents-driven sync daemon")
@@ -287,6 +297,8 @@ def main(argv: list[str] | None = None) -> int:
                           help="Path to b2ou_config.json")
     p_daemon.add_argument("--export-only", action="store_true",
                           help="Skip import phase")
+    p_daemon.add_argument("--clean-export", action="store_true",
+                          help="Export clean Markdown without BearID footers (forces export-only)")
     p_daemon.add_argument("-v", "--verbose", action="store_true")
     p_daemon.set_defaults(func=cmd_daemon)
 

@@ -64,6 +64,7 @@ class ExportConfig:
     # ── Phase flags ───────────────────────────────────────────────────────
     skip_import: bool = False
     skip_export: bool = False
+    clean_export: bool = False
 
     # ── Misc ─────────────────────────────────────────────────────────────
     logging_enabled: bool = True
@@ -128,12 +129,16 @@ _SYNC_GATE_DEFAULTS: dict = {
     "conflict_backup_dir":     "",
     "daemon_debounce_seconds": 3.0,
     "daemon_retry_seconds":    5.0,
+    "clean_export":            False,
 }
 
 
 @dataclass
 class SyncGateConfig:
     """Settings for the sync-gate daemon orchestrator."""
+
+    # ── Optional conflict backup ──────────────────────────────────────────
+    conflict_backup_dir: str = ""
 
     # ── Script invocation ────────────────────────────────────────────────
     script_path: Path = Path("b2ou")
@@ -152,6 +157,9 @@ class SyncGateConfig:
     bear_settle_seconds: int = 3
     daemon_debounce_seconds: float = 3.0
     daemon_retry_seconds: float = 5.0
+
+    # ── Optional flags ────────────────────────────────────────────────────
+    clean_export: bool = False
 
     # ── Optional conflict backup ──────────────────────────────────────────
     conflict_backup_dir: str = ""
@@ -214,4 +222,5 @@ def load_sync_gate_config(config_file: Path) -> SyncGateConfig:
         daemon_debounce_seconds=float(raw["daemon_debounce_seconds"]),
         daemon_retry_seconds=float(raw["daemon_retry_seconds"]),
         conflict_backup_dir=raw.get("conflict_backup_dir", ""),
+        clean_export=bool(raw.get("clean_export", False)),
     )

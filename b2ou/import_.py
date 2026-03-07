@@ -25,7 +25,12 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from b2ou.config import ExportConfig
-from b2ou.constants import IMPORT_SKIP_DIRS, NOTE_EXTENSIONS
+from b2ou.constants import (
+    CLOUD_JUNK_DIRS,
+    CLOUD_JUNK_RE,
+    IMPORT_SKIP_DIRS,
+    NOTE_EXTENSIONS,
+)
 from b2ou.db import (
     core_data_to_unix,
     get_note_by_title,
@@ -87,20 +92,26 @@ def update_sync_timestamp(config: ExportConfig, ts: float) -> None:
 
 def backup_disk_note(md_file: Path, backup_path: Path) -> None:
     """Copy *md_file* (or its containing textbundle) to *backup_path*."""
+    def _next_available_path(base: Path) -> Path:
+        if not base.exists():
+            return base
+        stem = base.stem
+        suffix = base.suffix
+        count = 2
+        while True:
+            candidate = base.parent / f"{stem} - {count:02d}{suffix}"
+            if not candidate.exists():
+                return candidate
+            count += 1
+
     backup_path.mkdir(parents=True, exist_ok=True)
     if ".textbundle" in str(md_file):
         bundle = md_file.parent
-        target_base = backup_path / bundle.name
-        target = Path(str(target_base))
-        stem = target_base.stem
-        ext = target_base.suffix
-        count = 2
-        while target.exists():
-            target = backup_path / f"{stem} - {str(count).zfill(2)}{ext}"
-            count += 1
+        target = _next_available_path(backup_path / bundle.name)
         shutil.copytree(bundle, target)
     else:
-        shutil.copy2(md_file, backup_path)
+        target = _next_available_path(backup_path / md_file.name)
+        shutil.copy2(md_file, target)
 
 
 def backup_bear_note(uuid: str, config: ExportConfig, conn: sqlite3.Connection) -> str:
@@ -239,7 +250,9 @@ def iter_changed_note_files(
     for root, dirnames, filenames in os.walk(root_path):
         dirnames[:] = [
             d for d in dirnames
-            if d not in IMPORT_SKIP_DIRS and not d.startswith(".Ulysses")
+            if d not in IMPORT_SKIP_DIRS
+            and d not in CLOUD_JUNK_DIRS
+            and not d.startswith(".Ulysses")
         ]
         root_p = Path(root)
 
@@ -252,6 +265,8 @@ def iter_changed_note_files(
                 dirnames.remove(d)
 
         for fname in filenames:
+            if CLOUD_JUNK_RE.match(fname):
+                continue
             if not any(fname.endswith(ext) for ext in NOTE_EXTENSIONS):
                 continue
             if fname in (".sync-time.log", ".export-time.log", ".DS_Store"):
@@ -617,11 +632,11 @@ def import_changed_notes(config: ExportConfig) -> bool:
         return False
 
     ts_last_sync, ts_last_export = read_sync_timestamps(config)
-    current_sync_ts = time.time()
-    update_sync_timestamp(config, current_sync_ts)
+    scan_started_ts = time.time()
 
     changed = iter_changed_note_files(config.export_path, ts_last_sync, config)
     if not changed:
+        update_sync_timestamp(config, scan_started_ts)
         return False
 
     # Lazy vault index — built only when first needed
@@ -640,11 +655,11 @@ def import_changed_notes(config: ExportConfig) -> bool:
         log.warning("Could not open Bear DB read-only: %s", exc)
 
     updates_found = False
+    had_failures = False
     try:
-        for md_file, ts in changed:
-            if not updates_found:
+        for idx, (md_file, ts) in enumerate(changed):
+            if idx == 0:
                 time.sleep(1)
-            updates_found = True
             try:
                 text = md_file.read_text(encoding="utf-8")
                 backup_disk_note(md_file, config.backup_path)
@@ -657,10 +672,20 @@ def import_changed_notes(config: ExportConfig) -> bool:
                         conn, vault_index_fn=get_vault_index,
                     )
                     log.info("Bear note updated: %s", md_file)
+                updates_found = True
             except Exception as exc:
+                had_failures = True
                 log.error("Failed to import %s: %s", md_file, exc)
     finally:
         if conn is not None:
             conn.close()
 
+    if had_failures:
+        log.warning(
+            "Import completed with failures; sync timestamp left unchanged "
+            "for safe retry."
+        )
+        return updates_found
+
+    update_sync_timestamp(config, scan_started_ts)
     return updates_found

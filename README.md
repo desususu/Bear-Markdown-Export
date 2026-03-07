@@ -62,13 +62,16 @@ pip install -e ".[all]"
 
 # 3. Initialize config
 # This will create a default b2ou_config.json in the current folder
-b2ou gate
+b2ou sync
 ```
 
 After editing `b2ou_config.json` with your paths:
 
 ```bash
-# One-time sync
+# One-time manual sync ignoring JSON config
+b2ou sync-manual --out ~/Notes --backup ~/NotesBak
+
+# Check the sync gate (run-once based on config)
 b2ou sync
 
 # Run as background daemon
@@ -83,8 +86,8 @@ b2ou daemon
 |---|---|
 | `b2ou export` | Export Bear notes to disk (one-way) |
 | `b2ou import` | Import changed notes from disk back into Bear |
-| `b2ou sync` | Run a full import + export cycle |
-| `b2ou gate` | Run-once smart sync (safe for cron/launchd) |
+| `b2ou sync-manual`| Run a full import + export cycle based on CLI arguments |
+| `b2ou sync` | Run-once smart sync based on JSON config (safe for cron/launchd) |
 | `b2ou daemon` | FSEvents-driven daemon mode (real-time) |
 | `b2ou guard-test` | Diagnose editing-guard layers |
 
@@ -95,11 +98,31 @@ Most commands accept:
 - `--backup PATH`: Conflict backup folder
 - `--format md|tb`: Output format (Markdown or TextBundle)
 - `--exclude-tag TAG`: Skip notes with specific tags
+- `--clean-export`: Export clean Markdown without BearID footers (disables import matching)
 
-For `gate` and `daemon`:
+For `sync` and `daemon`:
 - `--config FILE`: Path to your config JSON (default: `b2ou_config.json`)
-- `--force`: Bypass guards (gate only)
+- `--force`: Bypass guards (sync only)
 - `--export-only`: Skip the import phase
+- `--clean-export`: Export clean Markdown without BearID footers (forces export-only)
+
+---
+
+## Beginner Launcher (`run.sh`)
+
+```bash
+bash run.sh
+```
+
+At startup the script asks for language (`中文 / English`) and opens a guided menu for:
+
+- one-click setup (`venv` + dependency install + config creation)
+- config wizard for export/backup paths
+- one-time sync / forced sync / dry-run
+- foreground daemon mode
+- guard diagnostics
+- launchd startup install/uninstall/start/stop/status
+- log viewing and config-file opening
 
 ---
 
@@ -133,9 +156,9 @@ For `gate` and `daemon`:
 
 **Large vaults** — First export may take a minute or two. Subsequent syncs process only changed notes.
 
-**watchdog not installed** — `sync_gate.py` falls back to polling. Daemon mode still works but responds on a polling interval rather than via FSEvents.
+**watchdog not installed** — `sync` logic falls back to polling. Daemon mode still works but responds on a polling interval rather than via FSEvents.
 
-**launchd setup** — Run-once mode is designed for launchd. A sample plist is not included because paths are machine-specific. Point launchd at `DualSync/sync_gate.py` with your venv's Python and a `StartInterval` of 30–60 seconds.
+**launchd setup** — Run-once mode is designed for launchd. A sample plist is not included because paths are machine-specific. Point launchd at `b2ou sync` with your venv's Python and a `StartInterval` of 30–60 seconds.
 
 ---
 

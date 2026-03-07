@@ -57,7 +57,17 @@ def write_note_file(
 ) -> None:
     """Write *content* to *filepath*, preserving Bear timestamps."""
     is_new = not filepath.exists()
-    filepath.write_text(content, encoding="utf-8")
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    tmp = filepath.with_name(f".{filepath.name}.tmp")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, filepath)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
     if modified_unix > 0:
         os.utime(filepath, (-1, modified_unix))
     if created_core_data > 0 and is_new:
@@ -185,6 +195,7 @@ def make_text_bundle(
     conn,
     note_pk: int,
     bear_image_path: Path,
+    clean_export: bool = False,
 ) -> None:
     """Write a ``.textbundle`` for *text* at *filepath* (without extension)."""
     bundle_path = Path(str(filepath) + ".textbundle")
@@ -204,7 +215,7 @@ def make_text_bundle(
         }
     )
 
-    if uuid_str:
+    if uuid_str and not clean_export:
         write_note_file(bundle_path / ".bearid", uuid_str, mod_unix, 0)
 
     text = process_export_images_textbundle(
@@ -257,6 +268,36 @@ def export_notes(config: ExportConfig) -> tuple[int, set[Path]]:
     conn, tmp_path = copy_and_open(config.bear_db)
     note_count = 0
     expected_paths: set[Path] = set()
+    reserved_targets: set[Path] = set()
+
+    def _target_for(base_path: Path, as_textbundle: bool) -> Path:
+        suffix = ".textbundle" if as_textbundle else ".md"
+        return Path(str(base_path) + suffix)
+
+    def _unique_base_path(
+        base_path: Path,
+        as_textbundle: bool,
+        note_uuid: str,
+    ) -> Path:
+        target = _target_for(base_path, as_textbundle)
+        if target not in reserved_targets:
+            reserved_targets.add(target)
+            return base_path
+
+        tagged = base_path.parent / f"{base_path.name} - {note_uuid[:8]}"
+        tagged_target = _target_for(tagged, as_textbundle)
+        if tagged_target not in reserved_targets:
+            reserved_targets.add(tagged_target)
+            return tagged
+
+        count = 2
+        while True:
+            candidate = base_path.parent / f"{tagged.name} - {count:02d}"
+            candidate_target = _target_for(candidate, as_textbundle)
+            if candidate_target not in reserved_targets:
+                reserved_targets.add(candidate_target)
+                return candidate
+            count += 1
 
     try:
         config.export_path.mkdir(parents=True, exist_ok=True)
@@ -292,43 +333,37 @@ def export_notes(config: ExportConfig) -> tuple[int, set[Path]]:
             if not file_list:
                 continue
 
-            text = inject_bear_id(text, note.uuid)
+            if not config.clean_export:
+                text = inject_bear_id(text, note.uuid)
 
+            seen_paths: set[str] = set()
             for filepath_str in file_list:
+                if filepath_str in seen_paths:
+                    continue
+                seen_paths.add(filepath_str)
+
                 filepath = Path(filepath_str)
                 note_count += 1
+                as_textbundle = (
+                    config.export_as_textbundles
+                    and _should_use_textbundle(text, filepath, config)
+                )
+                filepath = _unique_base_path(filepath, as_textbundle, note.uuid)
+                target = _target_for(filepath, as_textbundle)
 
                 # ── Incremental skip ──────────────────────────────────────
-                if not config.export_as_textbundles:
-                    target = Path(filepath_str + ".md")
-                    if target.exists() and target.stat().st_mtime >= mod_unix:
-                        expected_paths.add(target)
-                        continue
-                else:
-                    tb = Path(filepath_str + ".textbundle")
-                    md = Path(filepath_str + ".md")
-                    if tb.is_dir() and tb.stat().st_mtime >= mod_unix:
-                        expected_paths.add(tb)
-                        continue
-                    if md.exists() and md.stat().st_mtime >= mod_unix:
-                        expected_paths.add(md)
-                        continue
+                if target.exists() and target.stat().st_mtime >= mod_unix:
+                    expected_paths.add(target)
+                    continue
 
                 # ── Full export ───────────────────────────────────────────
-                if config.export_as_textbundles:
-                    if _should_use_textbundle(text, filepath, config):
-                        make_text_bundle(
-                            text, filepath, mod_unix, note.creation_date,
-                            conn, note.pk, config.bear_image_path
-                        )
-                        expected_paths.add(Path(filepath_str + ".textbundle"))
-                    else:
-                        target = Path(filepath_str + ".md")
-                        write_note_file(
-                            target, text, mod_unix, note.creation_date
-                        )
-                        expected_paths.add(target)
-
+                if as_textbundle:
+                    make_text_bundle(
+                        text, filepath, mod_unix, note.creation_date,
+                        conn, note.pk, config.bear_image_path,
+                        clean_export=config.clean_export
+                    )
+                    expected_paths.add(target)
                 elif config.export_image_repository:
                     processed = process_export_images(
                         text, filepath, conn, note.pk,
@@ -336,14 +371,12 @@ def export_notes(config: ExportConfig) -> tuple[int, set[Path]]:
                         config.assets_path,
                         config.export_path,
                     )
-                    target = Path(filepath_str + ".md")
                     write_note_file(
                         target, processed, mod_unix, note.creation_date
                     )
                     expected_paths.add(target)
 
                 else:
-                    target = Path(filepath_str + ".md")
                     write_note_file(
                         target, text, mod_unix, note.creation_date
                     )

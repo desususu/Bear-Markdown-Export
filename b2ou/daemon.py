@@ -388,6 +388,12 @@ class SyncDaemon:
     def run(self) -> None:
         """Block until SIGTERM / SIGINT."""
         self._lock_fd = _acquire_lock(self._lock_file)
+        if self._lock_fd is None:
+            log.warning(
+                "Could not acquire lock (%s) — another sync process is active.",
+                self._lock_file,
+            )
+            return
 
         log.info(
             "══ Daemon starting ══  debounce=%.1fs  write_quiet=%.0fs  "
@@ -672,11 +678,19 @@ def run_once(
     lock_file = script_dir / ".b2ou.lock"
 
     lock_fd = _acquire_lock(lock_file)
+    if lock_fd is None:
+        log.warning(
+            "Could not acquire lock (%s) — another sync process is active.",
+            lock_file,
+        )
+        return 0
+
     state = _load_state(state_file)
 
     folder_md = _resolve(cfg.folder_md, script_dir)
     folder_tb = _resolve(cfg.folder_tb, script_dir)
     folders = [folder_md, folder_tb]
+    snapshots = build_snapshots(folders)
 
     from b2ou.config import DEFAULT_BEAR_DB as _BEAR_DB
     bear_db = _BEAR_DB
@@ -684,13 +698,20 @@ def run_once(
     last_sync_end = state.get("last_sync_end", 0)
 
     if not force:
-        reason = check_editing_guard(folders, float(cfg.write_quiet_seconds), last_sync_end)
+        reason = check_editing_guard(
+            folders,
+            float(cfg.write_quiet_seconds),
+            last_sync_end,
+            snapshots=snapshots,
+        )
         if reason:
             log.info("Guard blocked: %s", reason)
             _release_lock(lock_fd, lock_file)
             return 0
 
-    detector = ChangeDetector(state, folder_md, folder_tb, bear_db)
+    detector = ChangeDetector(
+        state, folder_md, folder_tb, bear_db, snapshots=snapshots
+    )
     bear_changed = detector.bear_changed()
     md_changed, tb_changed = detector.files_changed()
     files_changed = md_changed or tb_changed
@@ -713,6 +734,7 @@ def run_once(
         cfg, script_dir,
         export_only=export_only,
         files_changed=files_changed,
+        pre_snapshots=snapshots,
     )
 
     now = time.time()

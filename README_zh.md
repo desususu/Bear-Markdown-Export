@@ -62,14 +62,17 @@ pip install -e ".[all]"
 
 # 3. 初始化配置
 # 这将在当前目录创建一个默认的 b2ou_config.json
-b2ou gate
+b2ou sync
 ```
 
 修改 `b2ou_config.json` 中的路径后：
 
 ```bash
-# 执行单次同步
+# 执行单次基于 JSON 配置的同步
 b2ou sync
+
+# 如果不想用配置文件，通过 CLI 参数进行完整同步
+b2ou sync-manual --out ~/Notes --backup ~/NotesBak
 
 # 以守护进程模式运行（实时同步）
 b2ou daemon
@@ -83,8 +86,8 @@ b2ou daemon
 |---|---|
 | `b2ou export` | 导出 Bear 笔记到磁盘（单向） |
 | `b2ou import` | 从磁盘导入变更笔记到 Bear |
-| `b2ou sync` | 执行一次完整的 导入 + 导出 循环 |
-| `b2ou gate` | 单次智能同步（适合 cron/launchd） |
+| `b2ou sync-manual` | 基于命令行参数执行完整的 导入 + 导出 循环 |
+| `b2ou sync` | 基于配置文件的单次智能同步（适合 cron/launchd） |
 | `b2ou daemon` | FSEvents 驱动的守护进程模式（实时） |
 | `b2ou guard-test` | 诊断编辑守卫层 |
 
@@ -95,11 +98,13 @@ b2ou daemon
 - `--backup PATH`: 冲突备份目录
 - `--format md|tb`: 输出格式（Markdown 或 TextBundle）
 - `--exclude-tag TAG`: 跳过特定标签的笔记
+- `--clean-export`: 导出纯净版 Markdown 并移除 BearID 尾部标识（会同时禁用导入匹配机制）
 
-针对 `gate` 和 `daemon`:
+针对 `sync` 和 `daemon`:
 - `--config FILE`: 配置文件路径（默认：`b2ou_config.json`）
-- `--force`: 绕过守卫立即同步（仅限 gate）
+- `--force`: 绕过守卫立即同步（仅限 sync）
 - `--export-only`: 跳过导入阶段
+- `--clean-export`: 导出纯净版 Markdown 并移除 BearID 尾部标识（强制启用单向导出）
 
 | 变更来源 | 模式 | 延迟 |
 |---|---|---|
@@ -153,13 +158,22 @@ bash run.sh
 ### 菜单结构
 
 ```
-语言选择（English / 中文）
+语言选择（中文 / English）
 │
-├── 1  快速同步      — 交互式运行 bear_export_sync.py 一次
-├── 2  DualSync 菜单 — 单次运行 / 守护进程 / 强制 / 预演 / 仅导出 / 守卫测试
-├── 3  配置路径      — 引导向导或直接打开 sync_config.json 编辑
-├── 4  查看日志      — 查看 sync_gate.log 末尾行或用编辑器打开
-├── 5  依赖检查      — 检查 Python / venv / 包；一键安装缺失项
+├── 1  一键初始化（推荐）     — 自动创建 venv、安装依赖、创建配置并进入配置向导
+├── 2  配置向导              — 修改导出/备份路径和同步参数
+├── 3  单次智能同步          — 正常同步
+├── 4  强制同步              — 忽略守卫立即同步
+├── 5  预演                  — 不执行写入，仅检查将要发生的动作
+├── 6  前台守护进程          — 实时同步（Ctrl+C 退出）
+├── 7  守卫检测              — guard-test 诊断
+├── 8  安装开机启动（launchd）
+├── 9  卸载开机启动（launchd）
+├── 10 立即启动后台任务
+├── 11 立即停止后台任务
+├── 12 查看后台任务状态
+├── 13 查看日志
+├── 14 打开配置文件
 └── q  退出
 ```
 
@@ -195,9 +209,9 @@ bash run.sh
 
 **大型笔记库** — 首次导出可能需要一两分钟，后续同步只处理变更笔记，速度很快。
 
-**未安装 watchdog** — `sync_gate.py` 将退化为轮询模式。守护进程仍可运行，但改为按轮询间隔响应，而非 FSEvents 驱动。
+**未安装 watchdog** — `sync` 将退化为轮询模式。守护进程仍可运行，但改为按轮询间隔响应，而非 FSEvents 驱动。
 
-**launchd 配置** — 单次运行模式专为 launchd 设计。示例 plist 未包含在仓库中（路径因机器而异）。将 launchd 指向 `DualSync/sync_gate.py`，使用 venv 中的 Python，并设置 `StartInterval` 为 30–60 秒。
+**launchd 配置** — 单次运行模式专为 launchd 设计。示例 plist 未包含在仓库中（路径因机器而异）。将 launchd 指向 `b2ou sync`，使用 venv 中的 Python，并设置 `StartInterval` 为 30–60 秒。
 
 ---
 
